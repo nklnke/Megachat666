@@ -1,4 +1,10 @@
 // MegaChat666 v0.10 — WebSocket push + fallback polling + ответы/реакции/эмодзи
+// Оглавление (монолит осознанно, см. AGENTS.md):
+//   состояние → вход → WebSocket → чаты → «печатает...» → уведомления → закрепы
+//   → пересылка → опросы → тема → рендер (markdown автономен: MD-START/MD-END)
+//   → ответы → редактирование → реакции → эмодзи → отправка (файлы, DnD)
+//   → голосовые → комнаты → профиль → поиск → модалка картинок
+// ---------- состояние и хелперы ----------
 let username = localStorage.getItem("megachat_name") || "";
 let authToken = localStorage.getItem("megachat_token") || "";
 let chatFilterQ = "";
