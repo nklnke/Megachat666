@@ -22,16 +22,27 @@ import urllib.parse
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# Оглавление (монолит осознанно, см. AGENTS.md):
+#   1. config      — пути (data/, uploads/), лимиты, глобальное состояние
+#   2. helpers     — чистка строк, dm_room, слаги, имена файлов
+#   3. persistence — load_all/save_* (+ разовый переезд корней в data/)
+#   4. domain      — права, комнаты, онлайн, typing, файлы, муты
+#   5. websocket   — low-level фреймы + broadcast
+#   6. message ops — add/react/forward/pin/edit/delete/опросы
+#   7. HTTP handler — Handler: статика, API, WebSocket
+#   8. main        — фон, LAN IP, запуск
+# ---------- 1. config ----------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_FILE = os.path.join(BASE_DIR, "messages.json")
-PROFILES_FILE = os.path.join(BASE_DIR, "profiles.json")
-ROOMS_FILE = os.path.join(BASE_DIR, "rooms.json")
-SESSIONS_FILE = os.path.join(BASE_DIR, "sessions.json")
-PINNED_FILE = os.path.join(BASE_DIR, "pinned.json")
-ADMINS_FILE = os.path.join(BASE_DIR, "admins.json")
-MUTED_FILE = os.path.join(BASE_DIR, "muted.json")
-GRANTS_FILE = os.path.join(BASE_DIR, "grants.json")
-FILES_MANIFEST = os.path.join(BASE_DIR, "files.json")
+DATA_DIR = os.path.join(BASE_DIR, "data")  # рантайм-база: все JSON живут здесь
+DATA_FILE = os.path.join(DATA_DIR, "messages.json")
+PROFILES_FILE = os.path.join(DATA_DIR, "profiles.json")
+ROOMS_FILE = os.path.join(DATA_DIR, "rooms.json")
+SESSIONS_FILE = os.path.join(DATA_DIR, "sessions.json")
+PINNED_FILE = os.path.join(DATA_DIR, "pinned.json")
+ADMINS_FILE = os.path.join(DATA_DIR, "admins.json")
+MUTED_FILE = os.path.join(DATA_DIR, "muted.json")
+GRANTS_FILE = os.path.join(DATA_DIR, "grants.json")
+FILES_MANIFEST = os.path.join(DATA_DIR, "files.json")
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 
 MAX_TEXT_LEN = 2000
@@ -64,13 +75,15 @@ file_mimes = {}    # stored_name -> mime (точные типы для /files/)
 TYPING_TTL = 4  # секунд «печатает...» живёт без продления
 WS_GRACE = 8  # секунд после разрыва WS до пометки оффлайн
 _next_id = 1
+START_TS = time.time()  # для /stats (аптайм)
+BOT_NAME = "🤖 Бот"  # отправитель ответов на команды (/help, /stats, /online)
 
 ws_lock = threading.Lock()
 ws_clients = []  # [{conn, username, send_lock}]
 _last_online_snapshot = []
 
 
-# ---------- helpers ----------
+# ---------- 2. helpers ----------
 def clean_name(name):
     name = (name or "").strip()
     name = " ".join(name.split())
@@ -107,10 +120,23 @@ def now_str():
     return datetime.now().strftime("%H:%M")
 
 
-# ---------- persistence ----------
+# ---------- 3. persistence ----------
 def load_all():
     global messages, profiles, rooms, sessions, pinned, file_mimes
     global admins, muted, grants, _next_id
+    os.makedirs(DATA_DIR, exist_ok=True)
+    # переезд с корней: старые JSON из корня уезжают в data/ (разово, без потерь)
+    for _legacy in ("messages.json", "profiles.json", "rooms.json",
+                    "sessions.json", "pinned.json", "files.json",
+                    "admins.json", "muted.json", "grants.json"):
+        _src = os.path.join(BASE_DIR, _legacy)
+        _dst = os.path.join(DATA_DIR, _legacy)
+        try:
+            if os.path.isfile(_src) and not os.path.exists(_dst):
+                os.replace(_src, _dst)
+                print(f"База переехала: {_legacy} -> data/")
+        except Exception as e:
+            print(f"Не удалось перенести {_legacy}: {e}")
     try:
         if os.path.exists(DATA_FILE):
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -265,6 +291,7 @@ def save_grants():
         print(f"save grants: {e}")
 
 
+# ---------- 4. domain ----------
 def is_admin(name):
     return name in admins
 
@@ -393,7 +420,7 @@ def get_typing():
     return grouped
 
 
-# ---------- WebSocket low-level ----------
+# ---------- 5. websocket (low-level + broadcast) ----------
 def ws_send_frame(conn, payload: bytes, opcode=0x1):
     header = bytes([0x80 | opcode])
     n = len(payload)
@@ -456,6 +483,7 @@ def broadcast_online():
     ws_broadcast({"t": "online", "users": get_online(), "profiles": profiles})
 
 
+# ---------- 6. message ops ----------
 def add_message(username, room, text, file=None, reply_to=None, fwd=None,
                 poll=None):
     global _next_id
@@ -497,6 +525,35 @@ def add_message(username, room, text, file=None, reply_to=None, fwd=None,
     save_messages()
     ws_broadcast({"t": "msg", "m": msg})
     return msg
+
+
+def maybe_bot_command(username, room, text, reply_to=None):
+    """Команды вида /help. Возвращает сообщение бота или None.
+    Вызывать ДО add_message из обоих входов (WS send и POST /api/messages)."""
+    if not text.startswith("/"):
+        return None
+    cmd = text[1:].split()[0].lower() if len(text) > 1 else ""
+    if cmd == "help":
+        ans = ("Команды бота:\n/help — эта справка\n"
+               "/stats — статистика чата\n/online — кто сейчас онлайн")
+    elif cmd == "stats":
+        up = int(time.time() - START_TS)
+        with state_lock:
+            n_files = len(file_mimes)
+        ans = (f"📊 Статистика:\n👥 онлайн: {len(get_online())} · ников: {len(profiles)}\n"
+               f"💬 сообщений: {len(messages)} · комнат: {len(rooms)}\n"
+               f"📁 файлов: {n_files} ({uploads_size() / 1048576:.1f} МБ)\n"
+               f"⏱ аптайм: {up // 3600}ч {(up % 3600) // 60}м")
+    elif cmd == "online":
+        users = get_online()
+        ans = f"🟢 Онлайн ({len(users)}): " + (", ".join(users) if users else "—")
+    else:
+        ans = f"Неизвестная команда /{cmd}. Попробуй /help"
+    cmd_msg = add_message(username, room, text, reply_to=reply_to)
+    bot_msg = add_message(BOT_NAME, room, ans, reply_to=cmd_msg["id"])
+    with state_lock:
+        online.pop(BOT_NAME, None)  # бот — не человек, в онлайне не светится
+    return bot_msg
 
 
 def toggle_reaction(username, message_id, emoji):
@@ -647,7 +704,7 @@ def vote_poll(username, message_id, option):
     return msg
 
 
-# ---------- HTTP handler ----------
+# ---------- 7. HTTP handler ----------
 class Handler(BaseHTTPRequestHandler):
     server_version = "MegaChat666/0.10"
 
@@ -748,8 +805,9 @@ class Handler(BaseHTTPRequestHandler):
                     room = (data.get("room") or "general")[:64]
                     text = clean_text(data.get("text", ""))
                     if text and username and not is_muted(username) and can_access(room, username):
-                        add_message(username, room, text,
-                                    reply_to=data.get("reply_to"))
+                        maybe_bot_command(username, room, text,
+                                          reply_to=data.get("reply_to")) or add_message(
+                            username, room, text, reply_to=data.get("reply_to"))
                 elif t == "react":
                     toggle_reaction(username, data.get("id"), data.get("emoji"))
                 elif t == "vote":
@@ -882,19 +940,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     # -- POST --
-    def do_POST(self):
-        global rooms
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
-        big = (path == "/api/upload")
-        data = self.read_json(limit=MAX_FILE_BYTES + 1_000_000 if big else 200_000)
-
+    # --- POST /api/join|leave|heartbeat: вход, выход, пульс ---
+    def api_auth(self, path, data):
         if path == "/api/join":
             name = clean_name(data.get("username", ""))
             token = (data.get("token") or "")[:64]
             if len(name) < 2:
                 self.send_json({"ok": False, "error": "Имя слишком короткое (мин. 2 символа)"}, 400)
-                return
+                return True
             with state_lock:
                 toks = sessions.get(name, [])
                 if token and token in toks:
@@ -902,7 +955,7 @@ class Handler(BaseHTTPRequestHandler):
                 elif len(toks) >= MAX_DEVICES:
                     self.send_json({"ok": False, "error": "Ник занят (лимит устройств)",
                                     "suggest": suggest_name(name)}, 409)
-                    return
+                    return True
                 else:
                     token = os.urandom(12).hex()
                     toks.append(token)
@@ -921,35 +974,39 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "username": name, "token": token,
                             "profile": profiles.get(name, {}),
                             "admin": is_admin(name)})
-
+            return True
         elif path == "/api/leave":
             name = clean_name(data.get("username", ""))
             if name:
                 mark_left(name)
                 broadcast_online()
             self.send_json({"ok": True})
-
+            return True
         elif path == "/api/heartbeat":
             name = clean_name(data.get("username", ""))
             if name:
                 touch(name)
             self.send_json({"ok": True})
+            return True
+        return False
 
-        elif path == "/api/typing":
+    # --- POST /api/typing|profile: «печатает», профиль ---
+    def api_presence(self, path, data):
+        if path == "/api/typing":
             name = clean_name(data.get("username", ""))
             room = (data.get("room") or "general")[:64]
             if len(name) < 2:
                 self.send_json({"ok": False}, 400)
-                return
+                return True
             touch(name)
             mark_typing(name, room)
             self.send_json({"ok": True})
-
+            return True
         elif path == "/api/profile":
             name = clean_name(data.get("username", ""))
             if len(name) < 2:
                 self.send_json({"ok": False, "error": "Нет имени"}, 400)
-                return
+                return True
             bio = clean_bio(data.get("bio", ""))
             emoji = (data.get("emoji", "") or "").strip()[:8]
             with state_lock:
@@ -957,23 +1014,27 @@ class Handler(BaseHTTPRequestHandler):
             save_profiles()
             broadcast_online()
             self.send_json({"ok": True, "profile": profiles[name]})
+            return True
+        return False
 
-        elif path == "/api/rooms":
+    # --- POST /api/rooms|room_unlock: комнаты и пароли ---
+    def api_rooms(self, path, data):
+        if path == "/api/rooms":
             name = clean_name(data.get("username", ""))
             title = (data.get("name", "") or "").strip()[:MAX_ROOM_LEN]
             password = (data.get("password", "") or "")[:64]
             if len(name) < 2 or len(title) < 2:
                 self.send_json({"ok": False, "error": "Нужно имя и название комнаты (мин. 2)"}, 400)
-                return
+                return True
             rid = slug_room(title)
             with state_lock:
                 if any(r["id"] == rid for r in rooms):
                     pub = next(p for p in public_rooms() if p["id"] == rid)
                     self.send_json({"ok": True, "room": pub})
-                    return
+                    return True
                 if len(rooms) >= MAX_ROOMS:
                     self.send_json({"ok": False, "error": "Слишком много комнат"}, 400)
-                    return
+                    return True
                 room = {"id": rid, "name": title, "creator": name}
                 if password:
                     room["password"] = hashlib.sha256(password.encode()).hexdigest()
@@ -985,137 +1046,168 @@ class Handler(BaseHTTPRequestHandler):
             ws_broadcast({"t": "rooms", "rooms": public_rooms()})
             pub = next(p for p in public_rooms() if p["id"] == rid)
             self.send_json({"ok": True, "room": pub})
+            return True
+        elif path == "/api/room_unlock":
+            name = clean_name(data.get("username", ""))
+            room = (data.get("room") or "")[:64]
+            password = (data.get("password", "") or "")[:64]
+            with state_lock:
+                r = next((x for x in rooms if x["id"] == room), None)
+            if not r or not r.get("password"):
+                self.send_json({"ok": True})
+                return True
+            if hashlib.sha256(password.encode()).hexdigest() != r["password"]:
+                self.send_json({"ok": False, "error": "Неверный пароль"}, 403)
+                return True
+            with state_lock:
+                grants[f"{room}|{name}"] = True
+            save_grants()
+            self.send_json({"ok": True})
+            return True
+        return False
 
-        elif path == "/api/messages":
+    # --- POST сообщения и всё вокруг них: send/react/pin/forward/edit/delete ---
+    def api_messages(self, path, data):
+        if path == "/api/messages":
             name = clean_name(data.get("username", ""))
             room = (data.get("room") or "general")[:64]
             text = clean_text(data.get("text", ""))
             if len(name) < 2:
                 self.send_json({"ok": False, "error": "Нет имени"}, 400)
-                return
+                return True
             if not text:
                 self.send_json({"ok": False, "error": "Пустое сообщение"}, 400)
-                return
+                return True
             if is_muted(name):
                 self.send_json({"ok": False, "error": f"Мут до {mute_until_str(name)}"}, 403)
-                return
+                return True
             if not can_access(room, name):
                 self.send_json({"ok": False, "error": "Комната закрыта"}, 403)
-                return
-            msg = add_message(name, room, text, reply_to=data.get("reply_to"))
+                return True
+            msg = maybe_bot_command(name, room, text, reply_to=data.get("reply_to"))
+            if not msg:
+                msg = add_message(name, room, text, reply_to=data.get("reply_to"))
             self.send_json({"ok": True, "message": msg})
-
+            return True
         elif path == "/api/react":
             name = clean_name(data.get("username", ""))
             if len(name) < 2:
                 self.send_json({"ok": False, "error": "Нет имени"}, 400)
-                return
+                return True
             msg = toggle_reaction(name, data.get("id"), data.get("emoji"))
             if not msg:
                 self.send_json({"ok": False, "error": "Сообщение или эмодзи неверны"}, 400)
-                return
+                return True
             self.send_json({"ok": True, "message": msg})
-
+            return True
         elif path == "/api/pin":
             name = clean_name(data.get("username", ""))
             room = (data.get("room") or "general")[:64]
             if len(name) < 2:
                 self.send_json({"ok": False, "error": "Нет имени"}, 400)
-                return
+                return True
             res = toggle_pin(room, data.get("id"))
             if res == "bad":
                 self.send_json({"ok": False, "error": "Сообщение не найдено в этой комнате"}, 400)
-                return
+                return True
             self.send_json({"ok": True, "pin": res})
-
+            return True
         elif path == "/api/forward":
             name = clean_name(data.get("username", ""))
             room = (data.get("room") or "general")[:64]
             if len(name) < 2:
                 self.send_json({"ok": False, "error": "Нет имени"}, 400)
-                return
+                return True
             if is_muted(name):
                 self.send_json({"ok": False, "error": f"Мут до {mute_until_str(name)}"}, 403)
-                return
+                return True
             if not can_access(room, name):
                 self.send_json({"ok": False, "error": "Комната закрыта"}, 403)
-                return
+                return True
             try:
                 mid = int(data.get("id"))
             except (TypeError, ValueError):
                 self.send_json({"ok": False, "error": "Нет сообщения"}, 400)
-                return
+                return True
             msg = forward_message(name, mid, room)
             if not msg:
                 self.send_json({"ok": False, "error": "Сообщение не найдено"}, 400)
-                return
+                return True
             self.send_json({"ok": True, "message": msg})
-
+            return True
         elif path == "/api/edit":
             name = clean_name(data.get("username", ""))
             if len(name) < 2:
                 self.send_json({"ok": False, "error": "Нет имени"}, 400)
-                return
+                return True
             res = edit_message(name, data.get("id"), data.get("text", ""))
             if res == "forbidden":
                 self.send_json({"ok": False, "error": "Можно править только свои сообщения"}, 403)
-                return
+                return True
             if not res:
                 self.send_json({"ok": False, "error": "Сообщение не найдено или пустой текст"}, 400)
-                return
+                return True
             self.send_json({"ok": True, "message": res})
-
+            return True
         elif path == "/api/delete":
             name = clean_name(data.get("username", ""))
             if len(name) < 2:
                 self.send_json({"ok": False, "error": "Нет имени"}, 400)
-                return
+                return True
             res = delete_message(name, data.get("id"), allow_admin=is_admin(name))
             if res == "forbidden":
                 self.send_json({"ok": False, "error": "Можно удалять только свои сообщения"}, 403)
-                return
+                return True
             if not res:
                 self.send_json({"ok": False, "error": "Сообщение не найдено"}, 400)
-                return
+                return True
             room, mid = res
             self.send_json({"ok": True, "room": room, "id": mid})
+            return True
+        return False
 
-        elif path == "/api/polls":
+    # --- POST /api/polls|vote: опросы ---
+    def api_polls(self, path, data):
+        if path == "/api/polls":
             name = clean_name(data.get("username", ""))
             room = (data.get("room") or "general")[:64]
             if len(name) < 2:
                 self.send_json({"ok": False, "error": "Нет имени"}, 400)
-                return
+                return True
             if is_muted(name):
                 self.send_json({"ok": False, "error": f"Мут до {mute_until_str(name)}"}, 403)
-                return
+                return True
             if not can_access(room, name):
                 self.send_json({"ok": False, "error": "Комната закрыта"}, 403)
-                return
+                return True
             msg = create_poll(name, room, data.get("question", ""),
                               data.get("options", []))
             if not msg:
                 self.send_json({"ok": False, "error": "Нужен вопрос и минимум 2 варианта"}, 400)
-                return
+                return True
             self.send_json({"ok": True, "message": msg})
-
+            return True
         elif path == "/api/vote":
             name = clean_name(data.get("username", ""))
             if len(name) < 2:
                 self.send_json({"ok": False, "error": "Нет имени"}, 400)
-                return
+                return True
             msg = vote_poll(name, data.get("id"), data.get("option"))
             if not msg:
                 self.send_json({"ok": False, "error": "Опрос не найден"}, 400)
-                return
+                return True
             self.send_json({"ok": True, "message": msg})
+            return True
+        return False
 
-        elif path == "/api/mute":
+    # --- POST /api/mute: мут (только админ) ---
+    def api_admin(self, path, data):
+        if path == "/api/mute":
             admin = clean_name(data.get("admin", ""))
             target = clean_name(data.get("user", ""))
             if not is_admin(admin):
                 self.send_json({"ok": False, "error": "Только для админов"}, 403)
-                return
+                return True
             try:
                 minutes = int(data.get("minutes", 0))
             except (TypeError, ValueError):
@@ -1131,25 +1223,12 @@ class Handler(BaseHTTPRequestHandler):
                 active = {u: t for u, t in muted.items() if t > now}
             ws_broadcast({"t": "muted", "muted": active})
             self.send_json({"ok": True, "muted": active})
+            return True
+        return False
 
-        elif path == "/api/room_unlock":
-            name = clean_name(data.get("username", ""))
-            room = (data.get("room") or "")[:64]
-            password = (data.get("password", "") or "")[:64]
-            with state_lock:
-                r = next((x for x in rooms if x["id"] == room), None)
-            if not r or not r.get("password"):
-                self.send_json({"ok": True})
-                return
-            if hashlib.sha256(password.encode()).hexdigest() != r["password"]:
-                self.send_json({"ok": False, "error": "Неверный пароль"}, 403)
-                return
-            with state_lock:
-                grants[f"{room}|{name}"] = True
-            save_grants()
-            self.send_json({"ok": True})
-
-        elif path == "/api/upload":
+    # --- POST /api/upload: файлы (base64 -> uploads/, сообщение создаётся тут же) ---
+    def api_files(self, path, data):
+        if path == "/api/upload":
             # {username, room, filename, mime, data(base64), text?}
             name = clean_name(data.get("username", ""))
             room = (data.get("room") or "general")[:64]
@@ -1157,25 +1236,25 @@ class Handler(BaseHTTPRequestHandler):
             b64 = data.get("data", "")
             if len(name) < 2:
                 self.send_json({"ok": False, "error": "Нет имени"}, 400)
-                return
+                return True
             if is_muted(name):
                 self.send_json({"ok": False, "error": f"Мут до {mute_until_str(name)}"}, 403)
-                return
+                return True
             if not can_access(room, name):
                 self.send_json({"ok": False, "error": "Комната закрыта"}, 403)
-                return
+                return True
             try:
                 raw = base64.b64decode(b64, validate=True)
             except Exception:
                 self.send_json({"ok": False, "error": "Битый файл"}, 400)
-                return
+                return True
             if not raw or len(raw) > MAX_FILE_BYTES:
                 self.send_json({"ok": False, "error": "Файл пуст или больше 15 МБ"}, 400)
-                return
+                return True
             prune_uploads()
             if uploads_size() + len(raw) > MAX_UPLOADS_BYTES:
                 self.send_json({"ok": False, "error": "Хранилище заполнено (лимит 200 МБ, старые файлы чистятся)"}, 413)
-                return
+                return True
             uniq = f"{int(time.time())}_{os.urandom(3).hex()}_{filename}"
             with open(os.path.join(UPLOAD_DIR, uniq), "wb") as f:
                 f.write(raw)
@@ -1185,13 +1264,27 @@ class Handler(BaseHTTPRequestHandler):
             finfo = {"name": filename, "stored": uniq,
                      "size": len(raw), "mime": mime,
                      "url": f"/files/{uniq}"}
-            msg = add_message(name, room, clean_text(data.get("text", "")) or f"📎 {filename}", file=finfo,
+            msg = add_message(name, room, clean_text(data.get("text", "")), file=finfo,
                               reply_to=data.get("reply_to"))
             self.send_json({"ok": True, "message": msg, "file": finfo})
-        else:
-            self.send_error(404)
+            return True
+        return False
+
+    # --- POST-роутер: тонкий диспетчер, логика — в api_* выше ---
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        big = (path == "/api/upload")
+        data = self.read_json(limit=MAX_FILE_BYTES + 1_000_000 if big else 200_000)
+        for handler in (self.api_auth, self.api_presence, self.api_rooms,
+                        self.api_messages, self.api_polls, self.api_files,
+                        self.api_admin):
+            if handler(path, data):
+                return
+        self.send_error(404)
 
 
+# ---------- 8. main ----------
 def online_pruner():
     global _last_online_snapshot
     while True:
