@@ -987,22 +987,33 @@ window.addEventListener("drop", async (e) => {
   dropZone.classList.remove("drag-over");
   if (!username || !current) return;
   const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
-  for (const f of files) await uploadBlob(f, f.name, f.type || "");
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    await uploadBlob(f, f.name, f.type || "", files.length > 1 ? `${i + 1}/${files.length}` : "");
+  }
 });
 
-async function uploadBlob(blob, filename, mime) {
+async function uploadBlob(blob, filename, mime, counter) {
   if (blob.size > 15 * 1024 * 1024) { addSys("⚠️ Файл больше 15 МБ"); return; }
-  $("uploadStatus").classList.remove("hidden");
-  $("uploadStatus").textContent = `Загрузка ${filename}...`;
-  const buf = await blob.arrayBuffer();
+  const bar = $("uploadStatus");
+  bar.classList.remove("hidden");
+  bar.classList.add("uploading");
+  bar.innerHTML = "";
+  bar.appendChild(document.createTextNode(`Отправка${counter ? " " + counter : ""} · `));
+  const nm = document.createElement("span");
+  nm.className = "up-name";
+  nm.textContent = filename;
+  bar.appendChild(nm);
   try {
+    const buf = await blob.arrayBuffer();
     const r = await fetch("/api/upload", { method: "POST", headers: {"Content-Type":"application/json"},
       body: JSON.stringify({username, room: current.id, filename, mime, data: b64encode(buf), reply_to: replyTo ? replyTo.id : null}) });
     const d = await r.json();
     if (d.ok) { cancelReply(); if (!wsOk) onIncoming(d.message, true); }
     else addSys("⚠️ " + esc(d.error || "Ошибка загрузки"));
   } catch { addSys("⚠️ Нет связи с сервером"); }
-  $("uploadStatus").classList.add("hidden");
+  bar.classList.add("hidden");
+  bar.classList.remove("uploading");
 }
 
 function b64encode(buf) {
