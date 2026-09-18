@@ -690,7 +690,7 @@ function buildMessageNode(m) {
   if (m.poll) html += renderPoll(m);
   if (m.file) {
     const f = m.file;
-    if ((f.mime || "").startsWith("image/")) html += `<a href="${esc(f.url)}" target="_blank"><img class="attached" src="${esc(f.url)}" alt="${esc(f.name)}" loading="lazy"></a>`;
+    if ((f.mime || "").startsWith("image/")) html += `<img class="attached" src="${esc(f.url)}" data-full="${esc(f.url)}" alt="${esc(f.name)}" loading="lazy" title="Нажмите, чтобы увеличить">`;
     else if ((f.mime || "").startsWith("audio/")) html += `<audio class="msg-audio" controls preload="none" src="${esc(f.url)}"></audio>`;
     html += `<a class="file-link" href="${esc(f.url)}" target="_blank">📎 ${esc(f.name)} · ${fmtSize(f.size || 0)}</a>`;
   }
@@ -718,6 +718,8 @@ function buildMessageNode(m) {
   div.querySelectorAll("[data-react]").forEach(b => b.onclick = () => toggleReact(m.id, b.dataset.react));
   const q = div.querySelector("[data-jump]");
   if (q) q.onclick = () => jumpToMessage(m.reply.id);
+  const att = div.querySelector("img.attached");
+  if (att) att.onclick = (e) => { e.stopPropagation(); openImage(att.dataset.full || att.src, att.alt); };
   if (!own) {
     const av = document.createElement("div");
     av.className = "row-avatar";
@@ -961,6 +963,33 @@ $("fileInput").onchange = async () => {
   await uploadBlob(f, f.name, f.type || "");
 };
 
+// drag'n'drop файлов в чат (кидаем на область сообщений)
+let dragDepth = 0;
+const dropZone = $("messages");
+function dropActive() { return dropZone.classList.contains("drag-over"); }
+window.addEventListener("dragenter", (e) => {
+  if (!username || !current || !e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes("Files")) return;
+  e.preventDefault();
+  dragDepth++;
+  dropZone.classList.add("drag-over");
+});
+window.addEventListener("dragover", (e) => { if (dropActive()) e.preventDefault(); });
+window.addEventListener("dragleave", (e) => {
+  if (!dropActive()) return;
+  e.preventDefault();
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dropZone.classList.remove("drag-over");
+});
+window.addEventListener("drop", async (e) => {
+  if (!dropActive()) return;
+  e.preventDefault();
+  dragDepth = 0;
+  dropZone.classList.remove("drag-over");
+  if (!username || !current) return;
+  const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+  for (const f of files) await uploadBlob(f, f.name, f.type || "");
+});
+
 async function uploadBlob(blob, filename, mime) {
   if (blob.size > 15 * 1024 * 1024) { addSys("⚠️ Файл больше 15 МБ"); return; }
   $("uploadStatus").classList.remove("hidden");
@@ -1192,13 +1221,13 @@ document.addEventListener("keydown", (e) => {
   if (!$("reactPicker").classList.contains("hidden")) { closeReactPicker(); return; }
   if (!$("emojiPanel").classList.contains("hidden")) { $("emojiPanel").classList.add("hidden"); return; }
   if (!$("searchBar").classList.contains("hidden")) { $("searchClose").onclick(); return; }
-  for (const id of ["fwdModal", "profileModal", "roomModal"]) {
+  for (const id of ["fwdModal", "profileModal", "roomModal", "imgModal"]) {
     if (!$(id).classList.contains("hidden")) { $(id).classList.add("hidden"); return; }
   }
   if (!$("replyBar").classList.contains("hidden")) cancelReply();
 });
 // клик по фону модалки тоже закрывает
-for (const id of ["fwdModal", "profileModal", "roomModal"]) {
+for (const id of ["fwdModal", "profileModal", "roomModal", "imgModal"]) {
   $(id).addEventListener("click", (e) => { if (e.target.id === id) $(id).classList.add("hidden"); });
 }
 
@@ -1222,3 +1251,17 @@ function openRoomInfo() {
   $("roomModal").classList.remove("hidden");
 }
 $("roomInfoClose").onclick = () => $("roomModal").classList.add("hidden");
+
+// ---------- просмотр картинок в модалке ----------
+function openImage(url, name) {
+  const pic = $("imgModalPic");
+  pic.src = url;
+  pic.alt = name || "Картинка";
+  $("imgModalLink").href = url;
+  $("imgModal").classList.remove("hidden");
+}
+function closeImage() {
+  $("imgModalPic").removeAttribute("src");
+  $("imgModal").classList.add("hidden");
+}
+$("imgModalClose").onclick = closeImage;

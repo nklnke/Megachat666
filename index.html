@@ -88,10 +88,10 @@
     <div id="reactPicker" class="react-picker hidden"></div>
     <form id="sendForm" class="input-bar">
       <label class="attach" title="Прикрепить файл (до 15 МБ)">📎<input type="file" id="fileInput" hidden></label>
+      <textarea id="textInput" rows="1" maxlength="2000" placeholder="Написать сообщение... (Enter — отправить, Shift+Enter — новая строка)"></textarea>
       <button type="button" class="emoji-btn" id="emojiBtn" title="Эмодзи">😊</button>
       <button type="button" class="mic-btn" id="micBtn" title="Голосовое сообщение">🎤</button>
       <button type="button" class="emoji-btn" id="pollBtn" title="Создать опрос">📊</button>
-      <textarea id="textInput" rows="1" maxlength="2000" placeholder="Написать сообщение... (Enter — отправить, Shift+Enter — новая строка)"></textarea>
       <button type="submit">➤</button>
     </form>
     <div id="uploadStatus" class="upload-status hidden"></div>
@@ -158,6 +158,17 @@
       <button id="profileClose" class="ghost">Закрыть</button>
     </div>
     <div id="profileError" class="error"></div>
+  </div>
+</div>
+
+<!-- Модалка просмотра картинки -->
+<div id="imgModal" class="modal hidden">
+  <div class="img-modal-box">
+    <img id="imgModalPic" alt="Картинка">
+    <div class="img-modal-bar">
+      <a id="imgModalLink" href="#" target="_blank" rel="noopener">Открыть оригинал ↗</a>
+      <button id="imgModalClose" class="ghost">✕</button>
+    </div>
   </div>
 </div>
 
