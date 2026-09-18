@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MegaChat666 — локальный чат</title>
+<link rel="stylesheet" href="style.css">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#17212b">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+</head>
+<body>
+
+<div id="login" class="login-screen">
+  <div class="login-box">
+    <div class="logo">💬</div>
+    <h1>MegaChat666</h1>
+    <p>Чат для локальной сети · v0.10</p>
+    <p class="online-hint" id="loginOnline">подключаемся...</p>
+    <input id="nameInput" maxlength="30" placeholder="Ваш никнейм..." autocomplete="off">
+    <button id="joinBtn">Войти в чат</button>
+    <div id="loginError" class="error"></div>
+  </div>
+</div>
+
+<div id="app" class="app hidden">
+  <aside class="sidebar">
+    <div class="sidebar-header" id="myHeader" title="Настроить профиль">
+      <div class="my-avatar" id="myAvatar">?</div>
+      <div class="me">
+        <div class="my-name" id="myName">—</div>
+        <div class="my-status"><span class="dot" id="connDot"></span><span id="connText">подключение...</span></div>
+      </div>
+      <button class="gear" id="themeBtn" title="Светлая/тёмная тема">🌙</button>
+      <button class="gear" id="profileBtn" title="Профиль">⚙️</button>
+    </div>
+
+    <div class="side-section">
+      <input id="chatFilter" class="chat-filter" maxlength="30" placeholder="🔍 Найти чат..." autocomplete="off">
+    </div>
+
+    <div class="side-section">
+      <div class="side-title">Комнаты <button class="plus" id="addRoomBtn" title="Создать комнату">＋</button></div>
+      <ul id="roomList" class="nav"></ul>
+    </div>
+
+    <div class="side-section">
+      <div class="side-title">Личные сообщения</div>
+      <ul id="dmList" class="nav"></ul>
+    </div>
+
+    <div class="side-section grow">
+      <div class="side-title">Кто онлайн 👥 · <span id="onlineCount">0</span></div>
+      <ul id="onlineList" class="nav"></ul>
+    </div>
+  </aside>
+
+  <main class="chat">
+    <div class="chat-header">
+      <button class="icon-btn burger" id="menuBtn" title="Меню">☰</button>
+      <div class="avatar group" id="chatAvatar">#</div>
+      <div class="chat-head-text">
+        <div class="chat-title" id="chatTitle">Общий чат</div>
+        <div class="chat-sub" id="chatSub">—</div>
+      </div>
+      <button class="icon-btn" id="searchBtn" title="Поиск по сообщениям">🔍</button>
+      <button class="icon-btn" id="soundBtn" title="Звук уведомлений вкл/выкл">🔔</button>
+    </div>
+    <div id="searchBar" class="search-bar hidden">
+      <input id="searchInput" maxlength="100" placeholder="Поиск... (мин. 2 символа)" autocomplete="off">
+      <button id="searchClose" title="Закрыть поиск">✕</button>
+    </div>
+    <div id="searchResults" class="search-results hidden"></div>
+    <div id="pinBanner" class="pin-banner hidden">
+      <div class="pin-text" id="pinText"></div>
+      <button id="pinUnpin" title="Открепить">✕</button>
+    </div>
+    <div id="messages" class="messages"></div>
+    <button id="toBottom" class="to-bottom hidden" title="Вниз к новым">↓</button>
+    <div id="replyBar" class="reply-bar hidden">
+      <div class="reply-bar-text"><b id="replyAuthor"></b><span id="replyText"></span></div>
+      <button id="replyCancel" title="Отменить ответ">✕</button>
+    </div>
+    <div id="emojiPanel" class="emoji-panel hidden"></div>
+    <div id="reactPicker" class="react-picker hidden"></div>
+    <form id="sendForm" class="input-bar">
+      <label class="attach" title="Прикрепить файл (до 15 МБ)">📎<input type="file" id="fileInput" hidden></label>
+      <button type="button" class="emoji-btn" id="emojiBtn" title="Эмодзи">😊</button>
+      <button type="button" class="mic-btn" id="micBtn" title="Голосовое сообщение">🎤</button>
+      <button type="button" class="emoji-btn" id="pollBtn" title="Создать опрос">📊</button>
+      <textarea id="textInput" rows="1" maxlength="2000" placeholder="Написать сообщение... (Enter — отправить, Shift+Enter — новая строка)"></textarea>
+      <button type="submit">➤</button>
+    </form>
+    <div id="uploadStatus" class="upload-status hidden"></div>
+  </main>
+</div>
+
+<!-- Модалка инфо о комнате/чате -->
+<div id="roomModal" class="modal hidden">
+  <div class="modal-box">
+    <h2 id="roomInfoTitle">Чат</h2>
+    <div class="p-row" id="roomInfoBody"></div>
+    <div class="modal-btns">
+      <button id="roomInfoClose" class="ghost">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<!-- Модалка опроса -->
+<div id="pollModal" class="modal hidden">
+  <div class="modal-box">
+    <h2>Новый опрос</h2>
+    <label>Вопрос</label>
+    <input id="pollQuestion" maxlength="200" placeholder="Куда идём в пятницу?">
+    <label>Варианты (минимум 2)</label>
+    <div id="pollOptions">
+      <input class="poll-opt" maxlength="100" placeholder="Вариант 1">
+      <input class="poll-opt" maxlength="100" placeholder="Вариант 2">
+      <input class="poll-opt" maxlength="100" placeholder="Вариант 3 (необязательно)">
+    </div>
+    <div class="modal-btns">
+      <button id="pollCreate">Создать</button>
+      <button id="pollClose" class="ghost">Отмена</button>
+    </div>
+    <div id="pollError" class="error"></div>
+  </div>
+</div>
+
+<!-- Модалка пересылки -->
+<div id="fwdModal" class="modal hidden">
+  <div class="modal-box">
+    <h2>Переслать сообщение</h2>
+    <div class="fwd-preview" id="fwdPreview"></div>
+    <div class="side-title">Куда переслать</div>
+    <ul id="fwdList" class="nav fwd-list"></ul>
+    <div class="modal-btns">
+      <button id="fwdClose" class="ghost">Отмена</button>
+    </div>
+  </div>
+</div>
+
+<!-- Модалка профиля -->
+<div id="profileModal" class="modal hidden">
+  <div class="modal-box">
+    <h2 id="profileTitle">Мой профиль</h2>
+    <div class="p-row"><span>Ник:</span><b id="profileName">—</b></div>
+    <label>Эмодзи-аватар (необязательно)</label>
+    <input id="emojiInput" maxlength="8" placeholder="😎">
+    <label>О себе</label>
+    <textarea id="bioInput" maxlength="200" rows="3" placeholder="Пара слов о себе..."></textarea>
+    <div class="modal-btns">
+      <button id="profileSave">Сохранить</button>
+      <button id="profileClose" class="ghost">Закрыть</button>
+    </div>
+    <div id="profileError" class="error"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
