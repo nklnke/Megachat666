@@ -181,12 +181,5 @@ cython_debug/
 .cursorindexingignore
 
 
-admins.json
-files.json
-messages.json
-profiles.json
-sessions.json
-rooms.json
-muted.json
-grants.json
+/data
 /uploads
