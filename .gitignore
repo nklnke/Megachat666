@@ -179,3 +179,14 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+
+admins.json
+files.json
+messages.json
+profiles.json
+sessions.json
+rooms.json
+muted.json
+grants.json
+/uploads
