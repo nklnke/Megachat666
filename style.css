@@ -45,6 +45,13 @@ body {
 .me { flex: 1; min-width: 0; }
 .my-avatar, .avatar { width: 54px; height: 54px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 22px; color: #fff; flex-shrink: 0; background: linear-gradient(135deg, #5aa9e6, #2e7cc4); }
 .avatar.group { background: linear-gradient(135deg, #7b8af4, #4a5fd1); }
+.av-pic { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; display: block; }
+.avatar.big { width: 72px; height: 72px; font-size: 28px; }
+.avatar-row { display: flex; gap: 12px; align-items: center; }
+.avatar-btns { display: flex; gap: 8px; }
+.mini-btn { display: inline-block; background: var(--tg-blue); color: #fff; border: none; border-radius: 8px; padding: 8px 12px; font-size: 14px; cursor: pointer; }
+.mini-btn.ghost { background: var(--tg-ghost); }
+body.light .mini-btn.ghost { color: #111; }
 .my-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .my-status { font-size: 12px; color: var(--tg-muted); }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #ffb340; margin-right: 4px; }
@@ -160,6 +167,19 @@ body {
 .search-hit .sh-meta { font-size: 12px; color: var(--tg-muted); margin-bottom: 2px; }
 .search-hit mark { background: #5aa9e6; color: #0e1621; border-radius: 3px; padding: 0 2px; }
 .search-empty { padding: 10px; font-size: 13px; color: var(--tg-muted); text-align: center; }
+
+/* Медиа чата */
+.media-panel { background: var(--tg-panel); border-top: 1px solid var(--tg-input-border); }
+.media-filter { display: flex; gap: 6px; padding: 8px 16px 0; align-items: center; }
+.media-filter button { background: none; border: none; color: var(--tg-muted); font-size: 13px; cursor: pointer; padding: 6px 10px; border-radius: 14px; }
+.media-filter button.on { background: rgba(51,144,236,.2); color: var(--tg-text); }
+.media-filter [data-mf-x] { margin-left: auto; }
+.media-list { max-height: 220px; overflow-y: auto; padding: 6px; }
+.media-hit { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 14px; overflow-wrap: anywhere; word-break: break-word; }
+.media-hit:hover { background: var(--tg-hover); }
+.media-hit img { width: 44px; height: 44px; object-fit: cover; border-radius: 8px; flex-shrink: 0; }
+.media-hit .sh-meta { margin-left: auto; font-size: 12px; color: var(--tg-muted); flex-shrink: 0; }
+body.light .media-hit:hover { background: var(--tg-hover); }
 
 /* Упоминания */
 .mention { background: rgba(51,144,236,.35); border-radius: 4px; padding: 0 3px; font-weight: 600; }

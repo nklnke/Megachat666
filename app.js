@@ -24,6 +24,7 @@ let myProfile = { bio: "", emoji: "" };
 let rooms = [], onlineUsers = [], profiles = {};
 let current = { type: "room", id: "general", title: "Общий чат" };
 let cache = {};      // roomId -> {msgs: [], lastId: 0}
+let readState = {};    // roomId -> {user: last_read_id} (галочки)
 let unread = {};     // roomId -> count
 let replyTo = null;  // сообщение, на которое отвечаем
 let pinnedRooms = {};  // roomId -> {id, username, text}
@@ -54,6 +55,11 @@ function colorFor(name) { let h = 0; for (const c of name) h = (h * 31 + c.charC
 function esc(s) { return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 function dmRoom(a, b) { const p = [a, b].sort(); return `dm:${p[0]}|${p[1]}`; }
 function avatarLabel(name) { const p = profiles[name]; return (p && p.emoji) ? p.emoji : name[0].toUpperCase(); }
+function avatarInner(name) {
+  const p = (name === username ? myProfile : profiles[name]) || {};
+  if (p.avatar) return `<img class="av-pic" src="${esc(p.avatar)}" alt="">`;
+  return esc(name === username ? (myProfile.emoji || username[0].toUpperCase()) : avatarLabel(name));
+}
 function fmtSize(n) { if (n < 1024) return n + " Б"; if (n < 1048576) return (n/1024).toFixed(1) + " КБ"; return (n/1048576).toFixed(1) + " МБ"; }
 
 // ---------- вход ----------
@@ -98,6 +104,7 @@ async function enterApp() {
   try {
     const s = await (await fetch("/api/state")).json();
     rooms = s.rooms || []; onlineUsers = s.online || []; profiles = s.profiles || {};
+    if (s.read) readState = s.read;
     pinnedRooms = s.pinned || {};
     adminsList = s.admins || [];
     mutedMap = s.muted || {};
@@ -106,7 +113,7 @@ async function enterApp() {
   renderMe(); renderRooms(); renderOnline(); renderDMs();
   openChat("room", "general", "Общий чат");
   applySoundBtn();
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) updateTitle(); });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) { updateTitle(); sendRead(false); } });
   connectWS();
   $("textInput").focus();
 }
@@ -129,7 +136,7 @@ function connectWS() {
   };
   ws.onmessage = (ev) => {
     let d; try { d = JSON.parse(ev.data); } catch { return; }
-    if (d.t === "init") { rooms = d.rooms || rooms; onlineUsers = d.users || []; profiles = d.profiles || profiles; renderRooms(); renderOnline(); renderDMs(); renderMe(); }
+    if (d.t === "init") { rooms = d.rooms || rooms; onlineUsers = d.users || []; profiles = d.profiles || profiles; if (d.read) readState = d.read; renderRooms(); renderOnline(); renderDMs(); renderMe(); refreshTicks(); }
     else if (d.t === "muted") { mutedMap = d.muted || {}; renderOnline(); applyMuteState(); }
     else if (d.t === "msg") onIncoming(d.m);
     else if (d.t === "msg_update") onMsgUpdate(d.m);
@@ -137,6 +144,7 @@ function connectWS() {
     else if (d.t === "typing") onTyping(d.user, d.room);
     else if (d.t === "pin") { if (d.room) { pinnedRooms[d.room] = d.pin; if (d.room === current.id) renderPin(); } }
     else if (d.t === "online") { onlineUsers = d.users || []; profiles = d.profiles || profiles; renderOnline(); renderDMs(); }
+    else if (d.t === "read") onRead(d.room, d.user, d.id);
     else if (d.t === "rooms") { rooms = d.rooms; renderRooms(); }
   };
   ws.onclose = () => {
@@ -156,6 +164,7 @@ async function pollOnce() {
     if (s.pinned) { pinnedRooms = s.pinned; renderPin(); }
     if (s.admins) adminsList = s.admins;
     if (s.muted) { mutedMap = s.muted; applyMuteState(); }
+    if (s.read) { readState = s.read; refreshTicks(); }
     renderRooms(); renderOnline(); renderDMs();
     // heartbeat держит онлайн и сбрасывает WS-grace; тянем свежие + typing
     fetch("/api/heartbeat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username }) }).catch(() => {});
@@ -193,8 +202,9 @@ function openChat(type, id, title) {
   document.querySelector(".sidebar").classList.remove("open");
   renderPin();
   $("chatTitle").textContent = title;
-  $("chatAvatar").textContent = type === "room" ? "#" : avatarLabel(title);
+  $("chatAvatar").innerHTML = type === "room" ? "#" : avatarInner(title);
   messagesDiv.innerHTML = "";
+  $("mediaPanel").classList.add("hidden");
   const c = cache[id] || { msgs: [], lastId: 0 };
   cache[id] = c;
   c.lastDay = null;
@@ -214,6 +224,7 @@ function openChat(type, id, title) {
       else if (d.error) { delete unlockedRooms[id]; persistUnlocked(); showToast("⚠️ " + d.error); }
     })
     .catch(() => {});
+  sendRead(true);
 }
 
 // Слияние входящих: новые — в конец, изменённые (реакции) — перерисовать на месте
@@ -242,6 +253,46 @@ function onMsgUpdate(m) {
     else { c.msgs.push(m); c.lastId = Math.max(c.lastId, m.id); }
   } else cache[m.room] = { msgs: [m], lastId: m.id };
   if (m.room === current.id) refreshMessageNode(m);
+}
+
+// ---------- галочки прочтения ----------
+function tickSuffix(m) {
+  if (!m || m.username !== username) return "";
+  const readers = readState[m.room] || {};
+  if (m.room.startsWith("dm:")) {
+    const parts = m.room.slice(3).split("|");
+    const peer = parts[0] === username ? parts[1] : parts[0];
+    return (readers[peer] || 0) >= m.id ? " ✓✓" : " ✓";
+  }
+  const n = Object.keys(readers).filter(u => u !== username && (readers[u] || 0) >= m.id).length;
+  return n > 0 ? ` 👁 ${n}` : " ✓";
+}
+function onRead(room, user, id) {
+  if (!room || !user || !(id > 0)) return;
+  const rmap = readState[room] || (readState[room] = {});
+  if (id <= (rmap[user] || 0)) return;
+  rmap[user] = id;
+  if (room === current.id) refreshTicks();
+}
+function refreshTicks() {
+  const c = cache[current.id];
+  if (!c) return;
+  for (const m of c.msgs) {
+    if (m.username !== username) continue;
+    const node = messagesDiv.querySelector(`[data-mid="${m.id}"]`);
+    if (node && !node.querySelector(".edit-input")) refreshMessageNode(m);
+  }
+}
+let lastReadSent = 0;
+function sendRead(force) {
+  const c = cache[current.id];
+  if (!c || !c.msgs.length) return;
+  const now = Date.now();
+  if (!force && now - lastReadSent < 2000) return;
+  lastReadSent = now;
+  const last = c.msgs[c.msgs.length - 1].id;
+  fetch("/api/read", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, room: current.id, id: last }) }).catch(() => {});
 }
 
 function onMsgDelete(room, id) {
@@ -320,7 +371,9 @@ function onTyping(user, room) {
   let m = typingTimers[room];
   if (!m) m = typingTimers[room] = {};
   clearTimeout(m[user]);
-  m[user] = setTimeout(() => { delete m[user]; renderRooms(); renderDMs(); updateChatSub(); }, 3500);
+  m[user] = setTimeout(() => { delete m[user]; renderRooms(); renderDMs();   updateChatSub();
+  if (list.length && list.some(m => m.room === current.id)) sendRead(false);
+}, 3500);
   renderRooms(); renderDMs(); updateChatSub();
 }
 function applyTypingSnapshot(grouped) {
@@ -412,6 +465,8 @@ messagesDiv.addEventListener("click", (e) => {
   messagesDiv.querySelectorAll(".msg.show-actions").forEach(x => x.classList.remove("show-actions"));
   if (!was) m.classList.add("show-actions");
 });
+// доскроллил до низа — отмечаем прочитанным (троттлится внутри sendRead)
+messagesDiv.addEventListener("scroll", () => { if (isNearBottom()) sendRead(false); });
 
 // ---------- закрепы ----------
 function renderPin() {
@@ -465,7 +520,7 @@ function openForward(m) {
   for (const p of dmPeers()) {
     const [c1, c2] = colorFor(p);
     const li = document.createElement("li");
-    li.innerHTML = `<div class="mini" style="background:linear-gradient(135deg, ${c1}, ${c2})">${esc(avatarLabel(p))}</div><div class="t">${esc(p)}</div>`;
+    li.innerHTML = `<div class="mini" style="background:linear-gradient(135deg, ${c1}, ${c2})">${avatarInner(p)}</div><div class="t">${esc(p)}</div>`;
     li.onclick = () => doForward("dm", dmRoom(username, p), p);
     ul.appendChild(li);
   }
@@ -556,7 +611,7 @@ if ("serviceWorker" in navigator && (location.protocol === "http:" || location.p
 // ---------- рендер ----------
 function renderMe() {
   $("myName").textContent = username + (amAdmin() ? " 👑" : "");
-  $("myAvatar").textContent = myProfile.emoji || username[0].toUpperCase();
+  $("myAvatar").innerHTML = avatarInner(username);
   const [c1, c2] = colorFor(username);
   if (!myProfile.emoji) $("myAvatar").style.background = `linear-gradient(135deg, ${c1}, ${c2})`;
   else $("myAvatar").style.background = "#2b5278";
@@ -591,7 +646,7 @@ function renderDMs() {
     const [c1, c2] = colorFor(p);
     const li = document.createElement("li");
     if (current.id === id) li.className = "active";
-    li.innerHTML = `<div class="mini" style="background:linear-gradient(135deg, ${c1}, ${c2})">${esc(avatarLabel(p))}</div>
+    li.innerHTML = `<div class="mini" style="background:linear-gradient(135deg, ${c1}, ${c2})">${avatarInner(p)}</div>
       <div class="t">${esc(p)}<div class="sub">${esc(typingNote(id) || (onlineUsers.includes(p) ? "в сети" : "оффлайн"))}</div></div>
       ${unread[id] ? `<span class="badge">${unread[id]}</span>` : ""}`;
     li.onclick = () => openChat("dm", id, p);
@@ -603,12 +658,12 @@ function renderDMs() {
 function renderOnline() {
   const ul = $("onlineList"); ul.innerHTML = "";
   const others = onlineUsers.filter(u => u !== username);
-  ul.innerHTML = `<li data-u="${esc(username)}"><div class="mini" style="background:#2b5278">✓</div><div class="t">${esc(username)}<div class="sub">это вы</div></div></li>`;
+  ul.innerHTML = `<li data-u="${esc(username)}"><div class="mini" style="background:#2b5278">${avatarInner(username)}</div><div class="t">${esc(username)}<div class="sub">это вы</div></div></li>`;
   for (const u of others.sort()) {
     const [c1, c2] = colorFor(u);
     const li = document.createElement("li");
     const mut = mutedMap[u] && mutedMap[u] * 1000 > Date.now();
-    li.innerHTML = `<div class="mini" style="background:linear-gradient(135deg, ${c1}, ${c2})">${esc(avatarLabel(u))}</div>
+    li.innerHTML = `<div class="mini" style="background:linear-gradient(135deg, ${c1}, ${c2})">${avatarInner(u)}</div>
       <div class="t">${esc(u)}${u !== username && adminsList.includes(u) ? " 👑" : ""}<div class="sub">${esc((profiles[u]||{}).bio || "нажмите — личка")}</div></div>
       ${amAdmin() && u !== username ? `<button class="mute-btn" title="${mut ? "Снять мут" : "Мут"}">${mut ? "▶" : "⏸"}</button>` : ""}`;
     li.onclick = () => openChat("dm", dmRoom(username, u), u);
@@ -709,7 +764,7 @@ function buildMessageNode(m) {
       return `<button class="react-chip${mine ? " mine" : ""}" data-react="${esc(k)}" title="${esc(users.join(", "))}">${esc(k)} ${users.length}</button>`;
     }).join("") + `</div>`;
   }
-  html += `<div class="msg-time" title="${esc(fullDate(m.ts))}">${esc(m.time || "")}${m.edited ? " · изм." : ""}</div>`;
+  html += `<div class="msg-time" title="${esc(fullDate(m.ts))}">${esc(m.time || "")}${m.edited ? " · изм." : ""}${tickSuffix(m)}</div>`;
   div.innerHTML = html;
   div.querySelector('[data-act="reply"]').onclick = (e) => { e.stopPropagation(); startReply(m); };
   div.querySelector('[data-act="react"]').onclick = (e) => { e.stopPropagation(); openReactPicker(m, e.currentTarget); };
@@ -729,7 +784,7 @@ function buildMessageNode(m) {
   if (!own) {
     const av = document.createElement("div");
     av.className = "row-avatar";
-    av.textContent = avatarLabel(m.username);
+    av.innerHTML = avatarInner(m.username);
     av.style.background = `linear-gradient(135deg, ${c1}, ${c2})`;
     av.title = m.username;
     av.onclick = () => openChat("dm", dmRoom(username, m.username), m.username);
@@ -1144,6 +1199,9 @@ function openProfile(user, editable) {
   $("emojiInput").disabled = !editable;
   $("bioInput").disabled = !editable;
   $("profileSave").style.display = editable ? "" : "none";
+  $("avatarBtns").style.display = editable ? "" : "none";
+  $("profileAvatarPrev").innerHTML = avatarInner(user);
+  $("avatarStatus").textContent = "";
   $("profileError").textContent = "";
   $("profileModal").classList.remove("hidden");
 }
@@ -1155,9 +1213,48 @@ $("profileSave").onclick = async () => {
     const r = await fetch("/api/profile", { method: "POST", headers: {"Content-Type":"application/json"},
       body: JSON.stringify({username, emoji: $("emojiInput").value.trim(), bio: $("bioInput").value.trim()}) });
     const d = await r.json();
-    if (d.ok) { myProfile = d.profile; profiles[username] = d.profile; renderMe(); renderDMs(); $("profileModal").classList.add("hidden"); }
+    if (d.ok) { myProfile = d.profile; profiles[username] = d.profile; renderMe(); renderRooms(); renderDMs(); renderOnline(); $("profileModal").classList.add("hidden"); }
     else $("profileError").textContent = d.error || "Ошибка";
   } catch { $("profileError").textContent = "Нет связи"; }
+};
+
+// ---------- фото-аватар ----------
+function refreshAvatarUI() {
+  renderMe(); renderRooms(); renderDMs(); renderOnline();
+  if (current.type === "dm" && current.title === username) $("chatAvatar").innerHTML = avatarInner(username);
+  if (profileViewUser === username) $("profileAvatarPrev").innerHTML = avatarInner(username);
+}
+$("avatarInput").onchange = async () => {
+  const f = $("avatarInput").files[0];
+  $("avatarInput").value = "";
+  if (!f) return;
+  if (!f.type.startsWith("image/")) { $("avatarStatus").textContent = "Нужна картинка"; return; }
+  if (f.size > 2 * 1024 * 1024) { $("avatarStatus").textContent = "Аватар до 2 МБ"; return; }
+  $("avatarStatus").textContent = "Загрузка...";
+  try {
+    const buf = await f.arrayBuffer();
+    const r = await fetch("/api/avatar", { method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({username, filename: f.name, mime: f.type, data: b64encode(buf)}) });
+    const d = await r.json();
+    if (d.ok) {
+      myProfile = d.profile; profiles[username] = d.profile;
+      $("avatarStatus").textContent = "";
+      refreshAvatarUI();
+    } else $("avatarStatus").textContent = d.error || "Ошибка";
+  } catch { $("avatarStatus").textContent = "Нет связи"; }
+};
+$("avatarRemove").onclick = async () => {
+  $("avatarStatus").textContent = "Убираем...";
+  try {
+    const r = await fetch("/api/avatar", { method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({username, data: ""}) });
+    const d = await r.json();
+    if (d.ok) {
+      myProfile = d.profile; profiles[username] = d.profile;
+      $("avatarStatus").textContent = "";
+      refreshAvatarUI();
+    } else $("avatarStatus").textContent = d.error || "Ошибка";
+  } catch { $("avatarStatus").textContent = "Нет связи"; }
 };
 
 // ---------- поиск ----------
@@ -1173,6 +1270,50 @@ $("searchBtn").onclick = () => {
   $("searchInput").focus();
 };
 $("searchClose").onclick = () => { $("searchBar").classList.add("hidden"); $("searchResults").classList.add("hidden"); };
+
+// ---------- медиа чата: фото/файлы/аудио/ссылки из кэша (сервер не дёргаем) ----------
+let mediaFilter = "all";
+$("mediaBtn").onclick = () => {
+  const p = $("mediaPanel");
+  p.classList.toggle("hidden");
+  if (!p.classList.contains("hidden")) renderMedia();
+};
+$("mediaFilter").querySelectorAll("[data-mf]").forEach(b => b.onclick = () => {
+  mediaFilter = b.dataset.mf;
+  $("mediaFilter").querySelectorAll("[data-mf]").forEach(x => x.classList.toggle("on", x === b));
+  renderMedia();
+});
+$("mediaFilter").querySelector("[data-mf-x]").onclick = () => $("mediaPanel").classList.add("hidden");
+function mediaKind(m) {
+  const mime = (m.file && m.file.mime) || "";
+  if (mime.startsWith("image/")) return "photo";
+  if (mime.startsWith("audio/")) return "audio";
+  if (m.file) return "file";
+  if (/https?:\/\/\S+/.test(m.text || "")) return "links";
+  return "";
+}
+function renderMedia() {
+  const box = $("mediaList"); box.innerHTML = "";
+  const c = cache[current.id];
+  const items = ((c && c.msgs) || []).filter(m => {
+    const k = mediaKind(m);
+    return mediaFilter === "all" ? !!k : k === mediaFilter;
+  }).slice(-100).reverse();
+  if (!items.length) { box.innerHTML = `<div class="search-empty">Пока пусто</div>`; return; }
+  for (const m of items) {
+    const div = document.createElement("div");
+    div.className = "media-hit";
+    const k = mediaKind(m);
+    let inner = "";
+    if (k === "photo") inner = `<img src="${esc(m.file.url)}" alt="" loading="lazy"><span>${esc(m.file.name)}</span>`;
+    else if (k === "audio") inner = `<span>🎤 ${esc(m.text || m.file.name)}</span>`;
+    else if (k === "file") inner = `<span>📎 ${esc(m.file.name)} · ${fmtSize(m.file.size || 0)}</span>`;
+    else inner = `<span>🔗 ${esc((m.text || "").match(/https?:\/\/\S+/)[0].slice(0, 80))}</span>`;
+    div.innerHTML = `${inner}<span class="sh-meta">${esc(m.username)} · ${esc(m.time || "")}</span>`;
+    div.onclick = () => { $("mediaPanel").classList.add("hidden"); jumpToMessage(m.id); };
+    box.appendChild(div);
+  }
+}
 $("searchInput").oninput = () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(runSearch, 300);
@@ -1237,6 +1378,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!$("reactPicker").classList.contains("hidden")) { closeReactPicker(); return; }
   if (!$("emojiPanel").classList.contains("hidden")) { $("emojiPanel").classList.add("hidden"); return; }
+  if (!$("mediaPanel").classList.contains("hidden")) { $("mediaPanel").classList.add("hidden"); return; }
   if (!$("searchBar").classList.contains("hidden")) { $("searchClose").onclick(); return; }
   for (const id of ["fwdModal", "profileModal", "roomModal", "imgModal"]) {
     if (!$(id).classList.contains("hidden")) { $(id).classList.add("hidden"); return; }

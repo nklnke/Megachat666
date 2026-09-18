@@ -8,7 +8,7 @@
 - Фронт: `index.html` / `style.css` / `app.js`, плюс `manifest.json` / `sw.js` / `icon.svg` (PWA), `start_chat.bat`.
 - **Зависимостей нет и не должно появляться** (`stdlib`-only — ключевое требование). `node` используется только для `node --check`.
 - `Megachat/` — чужой пустой git-стаб, не трогать.
-- JSON-файлы (`messages.json`, `sessions.json` и др.) и `uploads/` создаются рантаймом. После тестов удалять; в репо им не место.
+- JSON-файлы (`data/*.json`) и `uploads/` создаются рантаймом. После тестов удалять (`data/`, `uploads/`); в репо им не место.
 
 ## Проверки (обязательно после правок)
 
@@ -24,7 +24,7 @@ Start-Job -Name t -ScriptBlock { Set-Location -LiteralPath "D:\Users\user\Deskto
 Start-Sleep -Seconds 3
 # ... Invoke-RestMethod / python-скрипт ...
 Stop-Job -Name t; Remove-Job -Name t -Force
-# затем удалить созданные *.json и uploads/
+# затем удалить созданные data/ и uploads/
 ```
 
 ## Ловушки PowerShell 5.1 / Windows
@@ -37,7 +37,7 @@ Stop-Job -Name t; Remove-Job -Name t -Force
 
 - API-ответы: `{ok: True, ...}` / `{ok: False, "error": ...}` с HTTP-кодом (400/403/409/413). Новые эндпоинты — в том же стиле.
 - ID комнат: `"general"`, слаги, личка строго `dm:A|B` (отсортировано, см. `dm_room`). Клиент дублирует эту логику — менять синхронно.
-- WS-события сервера: `msg` (новое), `msg_update` (реакции/правки/голоса), `msg_delete`, `typing`, `pin`, `muted`, `online`, `rooms`, `init`. Команды клиента: `send`/`react`/`vote`/`typing`/`hb`. Реакция/голос/правка = изменить объект + broadcast `msg_update`, отдельных типов не плодить.
+- WS-события сервера: `msg` (новое), `msg_update` (реакции/правки/голоса), `msg_delete`, `typing`, `pin`, `muted`, `online`, `rooms`, `init`, `read` (галочки; отдельный тип оправдан — чтения не мутации сообщения, веером в `msg_update` был бы спам). Команды клиента: `send`/`react`/`vote`/`typing`/`hb`. Реакция/голос/правка = изменить объект + broadcast `msg_update`, отдельных типов не плодить.
 - `can_access()` — lock-free по дизайну (вызывается и под `state_lock`); не добавлять туда блокировок — будет дедлок.
 - Хеш пароля комнаты никогда не отдавать в API — только флаг `locked` через `public_rooms()`.
 - Фронт: кэш `cache[roomId]`, слияние через `mergeMessages` (upsert по `id`, иначе дубли). DOM-узел сообщения — `[data-mid]` на обёртке `.msg-row`.

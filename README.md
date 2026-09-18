@@ -6,7 +6,7 @@
 
 - **Общий чат и комнаты** — создание комнат (кнопка ＋, до 30), закрытые комнаты 🔒 с паролем
 - **Личные сообщения** — клик по человеку из «онлайн», формат комнат `dm:A|B`
-- **Профили** — эмодзи-аватар + «о себе» (шестерёнка или клик по шапке)
+- **Профили** — эмодзи-аватар или фото (до 2 МБ) + «о себе» (шестерёнка или клик по шапке)
 - **Файлы до 15 МБ** — скрепка 📎 или drag'n'drop на чат (можно несколько сразу, видно спиннер отправки), картинки инлайн с просмотром в модалке, всего не больше 200 МБ, авточистка старше 7 дней
 - **Голосовые сообщения** — кнопка 🎤, запись до 5 минут, плеер прямо в чате (с телефонов нужен HTTPS, см. ниже)
 - **Ответы** — кнопка ↩️, цитата с переходом к оригиналу
@@ -15,13 +15,15 @@
 - **Опросы** 📊 — до 8 вариантов, один выбор, живые проценты
 - **Закрепы** 📌 — один на комнату, баннер с переходом
 - **Пересылка** ⏩ сообщений между комнатами и личкой
-- **Поиск** 🔍 по сообщениям с подсветкой и переходом (чужие ЛС скрыты)
+- **Поиск** 🔍 по сообщениям с подсветкой и переходом (чужие ЛС скрыты), вкладка 🖼️ **Медиа** — фото/файлы/аудио/ссылки чата
+- **Галочки прочтения** — в личке ✓/✓✓, в комнатах 👁 со счётчиком
 - **Уведомления** — десктоп, звуковой бип, счётчик в заголовке вкладки, `@упоминания`
 - **«Печатает...»** ✍️, онлайн-статусы, защита ника токеном (до 5 устройств)
 - **Админка** 👑 — первый вошедший становится админом; мут ⏸/▶ с таймером
 - **Темы** 🌙/☀️, мобильный вид (drawer по ☰), PWA-установка на телефон
 - **Markdown-lite** — `**жирный**`, `*курсив*`, `` `код` ``, блоки ` ``` `, автоссылки
 - **Черновики** — недописанное хранится отдельно для каждой комнаты
+- **Команды-бот** 🤖 — `/help`, `/stats`, `/online` прямо в чате
 - Realtime через **WebSocket** (самописный, stdlib), при обрыве — автопереподключение + fallback на polling
 
 ## Быстрый старт
@@ -76,7 +78,7 @@ python server.py --tls --cert cert.pem --key key.pem
 | `index.html` / `style.css` / `app.js` | Веб-клиент |
 | `manifest.json` / `sw.js` / `icon.svg` | PWA |
 | `start_chat.bat` | Запуск сервера в один клик |
-| `messages.json`, `sessions.json`, `profiles.json`, `rooms.json`, `pinned.json`, `files.json`, `admins.json`, `muted.json`, `grants.json`, `uploads/` | Создаются рантаймом (история, сессии, файлы). В репозиторий не коммитятся |
+| `data/*.json` (сообщения, сессии, профили, комнаты, закрепы, файлы, админы, муты, доступы, прочтения), `uploads/` | Создаются рантаймом. В репозиторий не коммитятся |
 
 ## API (кратко)
 
@@ -87,7 +89,8 @@ python server.py --tls --cert cert.pem --key key.pem
 - `GET /api/state` — rooms + online + profiles + pinned + admins + muted одним запросом
 - `GET /api/rooms` / `POST /api/rooms` `{"username","name","password?"}`
 - `POST /api/room_unlock` `{"username","room","password"}`
-- `POST /api/profile` `{"username","emoji","bio"}`, `GET /api/profiles`
+- `POST /api/profile` `{"username","emoji","bio"}`, `POST /api/avatar` `{"username","filename","mime","data"}` (пустой `data` — убрать), `GET /api/profiles`
+- `POST /api/read` `{"username","room","id"}` — отметить прочитанным (монотонно)
 - `GET /api/messages?room=ID&since=N&username=` / `POST /api/messages` `{"username","room","text","reply_to?"}`
 - `POST /api/upload` `{"username","room","filename","mime","data(base64)","text?"}`, `GET /files/<id>`
 - `POST /api/react` `{"username","id","emoji"}` (тогл)
@@ -98,7 +101,7 @@ python server.py --tls --cert cert.pem --key key.pem
 - `POST /api/mute` `{"admin","user","minutes"}` (0 — снять), только админ
 - `GET /api/search?q=&username=&room?` (мин. 2 символа; чужие ЛС исключены)
 - `GET /api/typing` / `POST /api/typing`
-- `WS /ws?username=...` — события: `msg` `msg_update` `msg_delete` `typing` `pin` `muted` `online` `rooms` `init`; команды: `send` `react` `vote` `typing` `hb`
+- `WS /ws?username=...` — события: `msg` `msg_update` `msg_delete` `typing` `pin` `muted` `online` `rooms` `init` `read`; команды: `send` `react` `vote` `typing` `hb`
 
 ## Честные ограничения
 

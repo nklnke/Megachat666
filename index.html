@@ -67,6 +67,7 @@
         <div class="chat-sub" id="chatSub">—</div>
       </div>
       <button class="icon-btn" id="searchBtn" title="Поиск по сообщениям">🔍</button>
+      <button class="icon-btn" id="mediaBtn" title="Медиа и файлы чата">🖼️</button>
       <button class="icon-btn" id="soundBtn" title="Звук уведомлений вкл/выкл">🔔</button>
     </div>
     <div id="searchBar" class="search-bar hidden">
@@ -74,6 +75,12 @@
       <button id="searchClose" title="Закрыть поиск">✕</button>
     </div>
     <div id="searchResults" class="search-results hidden"></div>
+    <div id="mediaPanel" class="media-panel hidden">
+      <div class="media-filter" id="mediaFilter">
+        <button data-mf="all" class="on">Всё</button><button data-mf="photo">Фото</button><button data-mf="file">Файлы</button><button data-mf="audio">Аудио</button><button data-mf="links">Ссылки</button><button data-mf-x title="Закрыть">✕</button>
+      </div>
+      <div id="mediaList" class="media-list"></div>
+    </div>
     <div id="pinBanner" class="pin-banner hidden">
       <div class="pin-text" id="pinText"></div>
       <button id="pinUnpin" title="Открепить">✕</button>
@@ -149,6 +156,14 @@
   <div class="modal-box">
     <h2 id="profileTitle">Мой профиль</h2>
     <div class="p-row"><span>Ник:</span><b id="profileName">—</b></div>
+    <div class="p-row avatar-row">
+      <div class="avatar big" id="profileAvatarPrev">?</div>
+      <div class="avatar-btns" id="avatarBtns">
+        <label class="mini-btn" title="Загрузить фото (до 2 МБ)">📷 Загрузить<input type="file" id="avatarInput" accept="image/*" hidden></label>
+        <button class="mini-btn ghost" id="avatarRemove" title="Убрать фото">Убрать</button>
+      </div>
+    </div>
+    <div id="avatarStatus" class="error"></div>
     <label>Эмодзи-аватар (необязательно)</label>
     <input id="emojiInput" maxlength="8" placeholder="😎">
     <label>О себе</label>

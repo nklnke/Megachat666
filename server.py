@@ -42,6 +42,7 @@ PINNED_FILE = os.path.join(DATA_DIR, "pinned.json")
 ADMINS_FILE = os.path.join(DATA_DIR, "admins.json")
 MUTED_FILE = os.path.join(DATA_DIR, "muted.json")
 GRANTS_FILE = os.path.join(DATA_DIR, "grants.json")
+READ_FILE = os.path.join(DATA_DIR, "read.json")
 FILES_MANIFEST = os.path.join(DATA_DIR, "files.json")
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 
@@ -71,6 +72,7 @@ pinned = {}        # room -> {id, username, text} (закреп, один на �
 admins = []        # ники администраторов
 muted = {}         # username -> until_ts (мут)
 grants = {}        # "room|user" -> True (доступ в закрытую комнату)
+read_state = {}    # room -> {user: last_read_id} (галочки прочтения)
 file_mimes = {}    # stored_name -> mime (точные типы для /files/)
 TYPING_TTL = 4  # секунд «печатает...» живёт без продления
 WS_GRACE = 8  # секунд после разрыва WS до пометки оффлайн
@@ -123,7 +125,7 @@ def now_str():
 # ---------- 3. persistence ----------
 def load_all():
     global messages, profiles, rooms, sessions, pinned, file_mimes
-    global admins, muted, grants, _next_id
+    global admins, muted, grants, read_state, _next_id
     os.makedirs(DATA_DIR, exist_ok=True)
     # переезд с корней: старые JSON из корня уезжают в data/ (разово, без потерь)
     for _legacy in ("messages.json", "profiles.json", "rooms.json",
@@ -215,6 +217,14 @@ def load_all():
                     grants = d
     except Exception as e:
         print(f"Доступы не загружены: {e}")
+    try:
+        if os.path.exists(READ_FILE):
+            with open(READ_FILE, "r", encoding="utf-8") as f:
+                d = json.load(f)
+                if isinstance(d, dict):
+                    read_state = {r: v for r, v in d.items() if isinstance(v, dict)}
+    except Exception as e:
+        print(f"Прочтения не загружены: {e}")
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     prune_uploads()
 
@@ -291,6 +301,14 @@ def save_grants():
         print(f"save grants: {e}")
 
 
+def save_read():
+    try:
+        with open(READ_FILE, "w", encoding="utf-8") as f:
+            json.dump(read_state, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"save read: {e}")
+
+
 # ---------- 4. domain ----------
 def is_admin(name):
     return name in admins
@@ -337,11 +355,13 @@ def uploads_size():
 
 
 def prune_uploads():
-    """Удаляет файлы старше TTL. Возвращает число удалённых."""
+    """Удаляет файлы старше TTL (кроме avatar_* — ими управляет профиль). Возвращает число удалённых."""
     cutoff = time.time() - UPLOAD_TTL_DAYS * 86400
     n = 0
     try:
         for name in os.listdir(UPLOAD_DIR):
+            if name.startswith("avatar_"):
+                continue  # аватары живут пока их не заменят/уберут в профиле
             p = os.path.join(UPLOAD_DIR, name)
             try:
                 if os.path.isfile(p) and os.path.getmtime(p) < cutoff:
@@ -704,6 +724,12 @@ def vote_poll(username, message_id, option):
     return msg
 
 
+def read_snapshot():
+    """Копия read_state для /api/state и WS init (комната -> {user: last_id})."""
+    with state_lock:
+        return {r: dict(v) for r, v in read_state.items()}
+
+
 # ---------- 7. HTTP handler ----------
 class Handler(BaseHTTPRequestHandler):
     server_version = "MegaChat666/0.10"
@@ -774,7 +800,8 @@ class Handler(BaseHTTPRequestHandler):
         broadcast_online()
         try:
             ws_send_one(client, {"t": "init", "rooms": public_rooms(),
-                                 "users": get_online(), "profiles": profiles})
+                                 "users": get_online(), "profiles": profiles,
+                                 "read": read_snapshot()})
             while True:
                 try:
                     opcode, payload = ws_recv(conn)
@@ -869,7 +896,8 @@ class Handler(BaseHTTPRequestHandler):
                 active_muted = {u: t for u, t in muted.items() if t > now}
             self.send_json({"rooms": public_rooms(), "online": get_online(),
                             "profiles": profiles, "pinned": pinned,
-                            "admins": admins, "muted": active_muted})
+                            "admins": admins, "muted": active_muted,
+                            "read": read_snapshot()})
         elif path == "/api/rooms":
             self.send_json({"rooms": public_rooms()})
         elif path == "/api/online":
@@ -990,7 +1018,7 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return False
 
-    # --- POST /api/typing|profile: «печатает», профиль ---
+    # --- POST /api/typing|profile|avatar|read: присутствие и галочки ---
     def api_presence(self, path, data):
         if path == "/api/typing":
             name = clean_name(data.get("username", ""))
@@ -1010,12 +1038,85 @@ class Handler(BaseHTTPRequestHandler):
             bio = clean_bio(data.get("bio", ""))
             emoji = (data.get("emoji", "") or "").strip()[:8]
             with state_lock:
+                old_av = (profiles.get(name) or {}).get("avatar", "")
                 profiles[name] = {"bio": bio, "emoji": emoji}
+                if old_av:
+                    profiles[name]["avatar"] = old_av  # правка bio/emoji фото не трогает
             save_profiles()
             broadcast_online()
             self.send_json({"ok": True, "profile": profiles[name]})
             return True
+        elif path == "/api/avatar":
+            name = clean_name(data.get("username", ""))
+            if len(name) < 2:
+                self.send_json({"ok": False, "error": "Нет имени"}, 400)
+                return True
+            b64 = data.get("data", "") or ""
+            with state_lock:
+                prof = dict(profiles.get(name, {"bio": "", "emoji": ""}))
+                old = prof.pop("avatar", "")
+            if b64:
+                mime = (data.get("mime", "") or "")
+                if not mime.startswith("image/"):
+                    self.send_json({"ok": False, "error": "Нужна картинка"}, 400)
+                    return True
+                try:
+                    raw = base64.b64decode(b64, validate=True)
+                except Exception:
+                    self.send_json({"ok": False, "error": "Битый файл"}, 400)
+                    return True
+                if not raw or len(raw) > 2 * 1024 * 1024:
+                    self.send_json({"ok": False, "error": "Аватар до 2 МБ"}, 400)
+                    return True
+                uniq = f"avatar_{int(time.time())}_{os.urandom(3).hex()}_{safe_filename(data.get('filename', 'avatar'))}"
+                with open(os.path.join(UPLOAD_DIR, uniq), "wb") as f:
+                    f.write(raw)
+                file_mimes[uniq] = mime[:80] or "image/png"
+                save_file_mimes()
+                prof["avatar"] = f"/files/{uniq}"
+            with state_lock:
+                profiles[name] = prof
+            save_profiles()
+            if old:
+                self._drop_avatar_file(old)
+            broadcast_online()
+            self.send_json({"ok": True, "profile": prof})
+            return True
+        elif path == "/api/read":
+            name = clean_name(data.get("username", ""))
+            room = (data.get("room") or "general")[:64]
+            try:
+                mid = int(data.get("id"))
+            except (TypeError, ValueError):
+                self.send_json({"ok": False}, 400)
+                return True
+            if len(name) < 2 or not can_access(room, name):
+                self.send_json({"ok": False}, 403)
+                return True
+            with state_lock:
+                rmap = read_state.setdefault(room, {})
+                changed = mid > rmap.get(name, 0)
+                if changed:
+                    rmap[name] = mid
+            if changed:
+                save_read()
+                ws_broadcast({"t": "read", "room": room, "user": name, "id": mid})
+            self.send_json({"ok": True})
+            return True
         return False
+
+    def _drop_avatar_file(self, url):
+        """Удаляет старый файл аватара. Только avatar_* — вложения сообщений не трогаем."""
+        stored = (url or "").rsplit("/files/", 1)[-1]
+        if not stored.startswith("avatar_"):
+            return
+        try:
+            os.remove(os.path.join(UPLOAD_DIR, stored))
+        except OSError:
+            pass
+        with state_lock:
+            file_mimes.pop(stored, None)
+        save_file_mimes()
 
     # --- POST /api/rooms|room_unlock: комнаты и пароли ---
     def api_rooms(self, path, data):
