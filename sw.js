@@ -1,5 +1,5 @@
 // MegaChat666 service worker — кеширует статику, API всегда идёт в сеть
-const CACHE = "megachat-v1";
+const CACHE = "megachat-v0-11"; // бампить вместе с версией (см. AGENTS.md), иначе клиенты залипнут на старой статике
 const STATIC = ["/", "/index.html", "/style.css", "/app.js", "/manifest.json", "/icon.svg"];
 
 self.addEventListener("install", (e) => {

@@ -1,4 +1,4 @@
-// MegaChat666 v0.10 — WebSocket push + fallback polling + ответы/реакции/эмодзи
+// MegaChat666 v0.11 — WebSocket push + fallback polling + ответы/реакции/эмодзи
 // Оглавление (монолит осознанно, см. AGENTS.md):
 //   состояние → вход → WebSocket → чаты → «печатает...» → уведомления → закрепы
 //   → пересылка → опросы → тема → рендер (markdown автономен: MD-START/MD-END)
@@ -102,7 +102,7 @@ async function enterApp() {
   $("app").classList.remove("hidden");
   renderMe();
   try {
-    const s = await (await fetch("/api/state")).json();
+    const s = await (await fetch(`/api/state?username=${encodeURIComponent(username)}`)).json();
     rooms = s.rooms || []; onlineUsers = s.online || []; profiles = s.profiles || {};
     if (s.read) readState = s.read;
     pinnedRooms = s.pinned || {};
@@ -128,7 +128,7 @@ function connectWS() {
   clearTimeout(reconnectTimer);
   try { if (ws) ws.close(); } catch {}
   const proto = location.protocol === "https:" ? "wss://" : "ws://";
-  ws = new WebSocket(proto + location.host + "/ws?username=" + encodeURIComponent(username));
+  ws = new WebSocket(proto + location.host + "/ws?username=" + encodeURIComponent(username) + "&token=" + encodeURIComponent(authToken));
   ws.onopen = () => {
     wsOk = true; setConn(true); stopPolling();
     clearInterval(hbTimer);
@@ -159,7 +159,7 @@ function connectWS() {
 async function pollOnce() {
   if (wsOk) return;
   try {
-    const s = await (await fetch("/api/state")).json();
+    const s = await (await fetch(`/api/state?username=${encodeURIComponent(username)}`)).json();
     rooms = s.rooms || rooms; onlineUsers = s.online || []; profiles = s.profiles || profiles;
     if (s.pinned) { pinnedRooms = s.pinned; renderPin(); }
     if (s.admins) adminsList = s.admins;
@@ -371,9 +371,7 @@ function onTyping(user, room) {
   let m = typingTimers[room];
   if (!m) m = typingTimers[room] = {};
   clearTimeout(m[user]);
-  m[user] = setTimeout(() => { delete m[user]; renderRooms(); renderDMs();   updateChatSub();
-  if (list.length && list.some(m => m.room === current.id)) sendRead(false);
-}, 3500);
+  m[user] = setTimeout(() => { delete m[user]; renderRooms(); renderDMs(); updateChatSub(); }, 3500);
   renderRooms(); renderDMs(); updateChatSub();
 }
 function applyTypingSnapshot(grouped) {
@@ -513,7 +511,7 @@ function openForward(m) {
   ul.innerHTML = "";
   for (const r of rooms) {
     const li = document.createElement("li");
-    li.innerHTML = `<div class="mini" style="background:linear-gradient(135deg,#7b8af4,#4a5fd1)">#</div><div class="t">${esc(r.name)}</div>`;
+    li.innerHTML = `<div class="mini" style="background:linear-gradient(135deg,#7b8af4,#4a5fd1)">#</div><div class="t">${esc((r.locked ? "🔒 " : "") + r.name)}</div>`;
     li.onclick = () => doForward("room", r.id, r.name);
     ul.appendChild(li);
   }
@@ -583,7 +581,8 @@ async function doForward(type, roomId, title) {
     const r = await fetch("/api/forward", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, id: fwdMsg.id, room: roomId }) });
     const d = await r.json();
     if (d.ok) { $("fwdModal").classList.add("hidden"); openChat(type, roomId, title); }
-  } catch {}
+    else showToast("⚠️ " + (d.error || "Не удалось переслать"));
+  } catch { showToast("⚠️ Нет связи"); }
 }
 
 // ---------- тема ----------

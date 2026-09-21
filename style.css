@@ -14,7 +14,7 @@
   --tg-hover: #2a3748;          /* ховер пунктов сайдбара */
   --tg-chip: #232e3c;          /* системные плашки, разделитель дней */
   --tg-meta: #9fb3c8;           /* время в сообщениях */
-  --tg-input-border: var(--tg-input-border);   /* рамки полей ввода */
+  --tg-input-border: #2f3d4f;   /* рамки полей ввода */
   --tg-link: #a8d8ff;           /* ссылки на файлы */
   --tg-line: #0e1621;           /* разделитель сайдбара */
 }
@@ -342,7 +342,7 @@ body.light {
   --tg-hover: #f0f2f5;
   --tg-chip: #d9e2ea;
   --tg-meta: #8a9aa5;
-  --tg-input-border: var(--tg-input-border);
+  --tg-input-border: #d7dce1;
   --tg-link: #1a7fb5;
   --tg-line: #d7dce1;
 }

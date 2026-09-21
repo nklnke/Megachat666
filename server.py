@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MegaChat666 v0.10 — чат для локальной сети.
+"""MegaChat666 v0.11 — чат для локальной сети.
 Только стандартная библиотека Python. WebSocket реализован вручную.
 Запуск: python server.py [--host 0.0.0.0] [--port 8000]
 HTTPS:  python server.py --tls --cert cert.pem --key key.pem
@@ -230,9 +230,12 @@ def load_all():
 
 
 def save_messages():
+    # снимок под локом: save вызывают без захваченного state_lock из потоков handler'а
+    with state_lock:
+        snapshot = list(messages[-HISTORY_LIMIT:])
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(messages[-HISTORY_LIMIT:], f, ensure_ascii=False, indent=2)
+            json.dump(snapshot, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"save messages: {e}")
 
@@ -286,9 +289,11 @@ def save_admins():
 
 
 def save_muted():
+    with state_lock:
+        snapshot = dict(muted)
     try:
         with open(MUTED_FILE, "w", encoding="utf-8") as f:
-            json.dump(muted, f, ensure_ascii=False)
+            json.dump(snapshot, f, ensure_ascii=False)
     except Exception as e:
         print(f"save muted: {e}")
 
@@ -315,11 +320,13 @@ def is_admin(name):
 
 
 def is_muted(name):
-    until = muted.get(name, 0)
-    if until and until > time.time():
-        return True
+    with state_lock:
+        until = muted.get(name, 0)
+        if until and until > time.time():
+            return True
+        if until:
+            muted.pop(name, None)
     if until:
-        muted.pop(name, None)
         save_muted()
     return False
 
@@ -358,6 +365,7 @@ def prune_uploads():
     """Удаляет файлы старше TTL (кроме avatar_* — ими управляет профиль). Возвращает число удалённых."""
     cutoff = time.time() - UPLOAD_TTL_DAYS * 86400
     n = 0
+    gone = []
     try:
         for name in os.listdir(UPLOAD_DIR):
             if name.startswith("avatar_"):
@@ -366,12 +374,18 @@ def prune_uploads():
             try:
                 if os.path.isfile(p) and os.path.getmtime(p) < cutoff:
                     os.remove(p)
+                    gone.append(name)
                     n += 1
             except OSError:
                 pass
     except OSError:
         pass
-    if n:
+    if gone:
+        # манифест тоже чистим, иначе /stats врёт про число файлов
+        with state_lock:
+            for name in gone:
+                file_mimes.pop(name, None)
+        save_file_mimes()
         print(f"prune uploads: удалено {n}")
     return n
 
@@ -385,7 +399,8 @@ def suggest_name(base):
 
 
 def mute_until_str(name):
-    until = muted.get(name, 0)
+    with state_lock:
+        until = muted.get(name, 0)
     if until and until > time.time():
         return datetime.fromtimestamp(until).strftime("%H:%M")
     return ""
@@ -607,12 +622,20 @@ def forward_message(username, message_id, room):
         src = next((m for m in messages if m["id"] == message_id), None)
     if not src:
         return None
+    # опрос едет дальше как новый опрос с пустыми голосами, а не plain-text
+    poll = None
+    if isinstance(src.get("poll"), dict):
+        opts = [o.get("text", "") for o in src["poll"].get("options", [])]
+        opts = [o for o in opts if o][:8]
+        if len(opts) >= 2:
+            poll = {"options": [{"text": o, "votes": []} for o in opts]}
     return add_message(
         username, room[:64],
         src.get("text", ""),
         file=src.get("file"),
         fwd={"username": src.get("username", "?"),
              "room": src.get("room", "general")},
+        poll=poll,
     )
 
 
@@ -732,7 +755,7 @@ def read_snapshot():
 
 # ---------- 7. HTTP handler ----------
 class Handler(BaseHTTPRequestHandler):
-    server_version = "MegaChat666/0.10"
+    server_version = "MegaChat666/0.11"
 
     def log_message(self, fmt, *args):
         print(f"{self.client_address[0]} - {fmt % args}")
@@ -743,6 +766,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
@@ -757,6 +781,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", f"max-age={max_age}")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
@@ -765,7 +790,7 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0) or 0)
         except ValueError:
             return {}
-        if length <= 0 or length > MAX_FILE_BYTES + 2_000_000:
+        if length <= 0 or length > limit:
             return {}
         raw = self.rfile.read(length)
         try:
@@ -871,8 +896,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error(400, "Use WebSocket")
                 return
             username = clean_name(qs.get("username", [""])[0])
+            token = (qs.get("token", [""])[0] or "")[:64]
             if len(username) < 2:
                 self.send_error(400, "Bad username")
+                return
+            with state_lock:
+                toks = list(sessions.get(username, []))
+            if toks and token not in toks:
+                # чужой ник с потолка больше не проходит; лечится перевходом (/api/join выдаст токен)
+                self.send_error(403, "Bad token")
                 return
             self.handle_ws(username)
             return
@@ -892,10 +924,16 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/state":
             prune_online()
             now = time.time()
+            me = clean_name(qs.get("username", [""])[0])
             with state_lock:
                 active_muted = {u: t for u, t in muted.items() if t > now}
+                if len(me) >= 2:
+                    # тексты закрепов закрытых комнат — только тем, у кого есть доступ
+                    pins = {r: p for r, p in pinned.items() if can_access(r, me)}
+                else:
+                    pins = dict(pinned)
             self.send_json({"rooms": public_rooms(), "online": get_online(),
-                            "profiles": profiles, "pinned": pinned,
+                            "profiles": profiles, "pinned": pins,
                             "admins": admins, "muted": active_muted,
                             "read": read_snapshot()})
         elif path == "/api/rooms":
@@ -962,6 +1000,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", ctype or "application/octet-stream")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Content-Disposition", f'inline; filename="{name}"')
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             self.wfile.write(body)
         else:
@@ -1130,7 +1169,11 @@ class Handler(BaseHTTPRequestHandler):
             rid = slug_room(title)
             with state_lock:
                 if any(r["id"] == rid for r in rooms):
-                    pub = next(p for p in public_rooms() if p["id"] == rid)
+                    # инлайн: public_rooms() брать нельзя — он сам берёт state_lock (дедлок)
+                    r0 = next(r for r in rooms if r["id"] == rid)
+                    pub = {"id": r0["id"], "name": r0["name"],
+                           "creator": r0.get("creator", ""),
+                           "locked": bool(r0.get("password"))}
                     self.send_json({"ok": True, "room": pub})
                     return True
                 if len(rooms) >= MAX_ROOMS:
@@ -1412,7 +1455,7 @@ def get_lan_ip():
 
 def main():
     import argparse
-    p = argparse.ArgumentParser(description="MegaChat666 v0.9")
+    p = argparse.ArgumentParser(description="MegaChat666 v0.11")
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--tls", action="store_true", help="HTTPS + WSS (нужны --cert и --key)")
@@ -1443,7 +1486,7 @@ def main():
         scheme = "https"
     lan = get_lan_ip()
     print("=" * 55)
-    print(" MegaChat666 v0.10 — мульти-девайс, админка, замки комнат, PWA" + (" + HTTPS" if scheme == "https" else ""))
+    print(" MegaChat666 v0.11 — мульти-девайс, админка, замки комнат, PWA" + (" + HTTPS" if scheme == "https" else ""))
     print(f" На этом ПК:      {scheme}://localhost:{args.port}")
     print(f" Для других в LAN: {scheme}://{lan}:{args.port}")
     print(" Остановка: Ctrl+C")

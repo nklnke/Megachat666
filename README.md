@@ -2,7 +2,7 @@
 
 Локальный LAN-чат в духе Telegram: Python-сервер + веб-клиент. Без фреймворков и зависимостей — только стандартная библиотека Python.
 
-## Возможности (v0.10)
+## Возможности (v0.11)
 
 - **Общий чат и комнаты** — создание комнат (кнопка ＋, до 30), закрытые комнаты 🔒 с паролем
 - **Личные сообщения** — клик по человеку из «онлайн», формат комнат `dm:A|B`
@@ -86,7 +86,7 @@ python server.py --tls --cert cert.pem --key key.pem
 
 - `POST /api/join` `{"username","token?"}` → `{username, token, profile, admin}`; лимит 5 устройств → 409 `{suggest}`
 - `POST /api/leave`, `POST /api/heartbeat`
-- `GET /api/state` — rooms + online + profiles + pinned + admins + muted одним запросом
+- `GET /api/state?username=` — rooms + online + profiles + pinned + admins + muted одним запросом (тексты закрепов закрытых комнат — только при доступе)
 - `GET /api/rooms` / `POST /api/rooms` `{"username","name","password?"}`
 - `POST /api/room_unlock` `{"username","room","password"}`
 - `POST /api/profile` `{"username","emoji","bio"}`, `POST /api/avatar` `{"username","filename","mime","data"}` (пустой `data` — убрать), `GET /api/profiles`
@@ -96,12 +96,12 @@ python server.py --tls --cert cert.pem --key key.pem
 - `POST /api/react` `{"username","id","emoji"}` (тогл)
 - `POST /api/edit` `{"username","id","text"}` / `POST /api/delete` `{"username","id"}` (чужое — только админ)
 - `POST /api/pin` `{"username","room","id"}` (закреп/откреп)
-- `POST /api/forward` `{"username","id","room"}`
+- `POST /api/forward` `{"username","id","room"}` (опрос пересылается как новый опрос без голосов)
 - `POST /api/polls` `{"username","room","question","options[2..8]"}` / `POST /api/vote` `{"username","id","option"}`
 - `POST /api/mute` `{"admin","user","minutes"}` (0 — снять), только админ
 - `GET /api/search?q=&username=&room?` (мин. 2 символа; чужие ЛС исключены)
 - `GET /api/typing` / `POST /api/typing`
-- `WS /ws?username=...` — события: `msg` `msg_update` `msg_delete` `typing` `pin` `muted` `online` `rooms` `init` `read`; команды: `send` `react` `vote` `typing` `hb`
+- `WS /ws?username=...&token=...` (токен из `/api/join`, чужой ник без токена — 403) — события: `msg` `msg_update` `msg_delete` `typing` `pin` `muted` `online` `rooms` `init` `read`; команды: `send` `react` `vote` `typing` `hb`
 
 ## Честные ограничения
 
